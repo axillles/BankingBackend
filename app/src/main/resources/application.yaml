@@ -1,4 +1,5 @@
 spring:
+  twelvedata.api-key: REMOVED_TWELVEDATA_API_KEY
   datasource:
     url: jdbc:mysql://localhost:3306/banking
     username: user
