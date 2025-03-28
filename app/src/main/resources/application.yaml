@@ -1,6 +1,6 @@
 spring:
   twelvedata.api-key: REMOVED_TWELVEDATA_API_KEY
-  twelvedata.api.url: https://api.twelvedata.com
+  twelvedata.api-url: https://api.twelvedata.com
   datasource:
     url: jdbc:mysql://localhost:3306/banking
     username: user
@@ -17,3 +17,7 @@ spring:
     url: jdbc:mysql://localhost:3306/banking
     user: user
     password: REMOVED_DB_PASSWORD
+logging:
+  level:
+    com.bankingsystem.app.services.impl: DEBUG  # Включить логи для вашего класса
+    org.springframework.web.client.RestTemplate: DEBUG  # Логировать HTTP-запросы
