@@ -1,7 +1,7 @@
 spring:
   twelvedata:
     api-key: REMOVED_TWELVEDATA_API_KEY
-    api-url: https://localhost:8089
+    api-url: http://localhost:8089
   datasource:
     url: jdbc:mysql://localhost:3306/testdb
     username: test
