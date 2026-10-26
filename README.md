@@ -9,7 +9,6 @@
 ## Структура проекта
 
 ```
-t1sheryo-bankingsystemapplication/
 ├── README.md
 ├── app/
 │   ├── HELP.md
