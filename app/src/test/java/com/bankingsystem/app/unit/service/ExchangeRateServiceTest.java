@@ -40,7 +40,7 @@ public class ExchangeRateServiceTest {
     @Mock
     private RestTemplate restTemplate;
 
-    private static final String API_KEY = "REMOVED_TWELVEDATA_API_KEY";
+    private static final String API_KEY = "test-api-key";
     private static final String API_URL = "https://api.twelvedata.com";
     private static final Currency CURRENCY_FROM = Currency.USD;
     private static final Currency CURRENCY_TO = Currency.EUR;

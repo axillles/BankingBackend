@@ -45,8 +45,7 @@ public class LimitControllerTest {
             OffsetDateTime.of(2024, 1, 1, 12, 0, 0, 0, ZoneOffset.UTC);
     private static final Currency LIMIT_CURRENCY = Currency.USD;
     private static final BigDecimal LIMIT_REMAINDER = BigDecimal.valueOf(500);
-    private static final AccountEntity LIMIT_ACCOUNT =
-            new AccountEntity(ACCOUNT_ID);
+    private static final AccountEntity LIMIT_ACCOUNT = createAccount(ACCOUNT_ID);
 
     private static final String RESPONSE_HEADER = "Location";
     private static final String RESPONSE_HEADER_VALUE = "/bank/limits/" + LIMIT_ID;
@@ -258,5 +257,11 @@ public class LimitControllerTest {
         limitResponse2.setRemainder(LIMIT_REMAINDER);
 
         return List.of(limitResponse1, limitResponse2);
+    }
+
+    private static AccountEntity createAccount(Long id) {
+        AccountEntity account = new AccountEntity();
+        account.setId(id);
+        return account;
     }
 }

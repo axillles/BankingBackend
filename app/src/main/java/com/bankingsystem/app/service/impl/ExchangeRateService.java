@@ -9,7 +9,6 @@ import com.bankingsystem.app.repository.ExchangeRateRepository;
 import com.bankingsystem.app.service.interfaces.ExchangeRateServiceInterface;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import com.bankingsystem.app.model.CurrencyPair;
@@ -48,8 +47,6 @@ public class ExchangeRateService implements ExchangeRateServiceInterface {
     private final TwelveDataConfig twelveDataConfig;
     private final ExchangeRateRepository exchangeRateRepository;
     private final RestTemplate restTemplate;
-    // это время необходимо предоставить в мс
-    private final static int FIXED_UPDATE_RATE_TIME = 1000 * 60 * 60 * 6; // 6 часов
     private static final List<CurrencyPair> CURRENCY_PAIRS;
 
     // лист пар для перевода из валюты в другую валюту
@@ -116,8 +113,7 @@ public class ExchangeRateService implements ExchangeRateServiceInterface {
         return exchangeRateRepository.save(entity);
     }
 
-    // автоматическое обновление курсов раз в указанную единицу времени
-    @Scheduled(fixedRate = FIXED_UPDATE_RATE_TIME)
+    // вызывается по расписанию из ExchangeRateScheduler
     @Override
     public void updateExchangeRateAutomatically() {
         for (CurrencyPair pair : CURRENCY_PAIRS) {

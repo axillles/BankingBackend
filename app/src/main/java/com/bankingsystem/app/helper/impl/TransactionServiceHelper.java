@@ -15,8 +15,6 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.OffsetDateTime;
-import java.util.Optional;
 
 @Slf4j
 @Component
@@ -64,30 +62,31 @@ public class TransactionServiceHelper implements TransactionServiceHelperInterfa
         return new AccountPair(accountFrom, accountTo);
     }
     @Override
-    public LimitEntity findAndValidateLimit(Long account, Category category) {
-        Optional<LimitEntity> limitOptional = limitService.getLimitByAccountIdAndCategory(account, category);
-        LimitEntity limit = limitOptional.orElseThrow(() -> new IllegalArgumentException("Limit for account" + account
-                + "and category " + category + " not found"));
-        return limit;
+    public LimitEntity findOrCreateLimit(AccountEntity account, Category category) {
+        // если клиент не устанавливал лимит, действует лимит по умолчанию 1000 USD
+        return limitService.getLimitByAccountIdAndCategory(account.getId(), category)
+                .orElseGet(() -> limitService.createDefaultLimit(account, category));
     }
+    // spentInMonthUsd - расходы за месяц по категории вместе с текущей транзакцией
     @Override
-    public boolean isLimitExceeded(BigDecimal sumInUsd, LimitEntity limit) {
-        BigDecimal limitRemainder = limit.getLimitRemainder();
-        if(limitRemainder == null) {
-            throw new IllegalStateException("Limit remainder is null for limitId: " + limit.getId());
+    public boolean isLimitExceeded(BigDecimal spentInMonthUsd, LimitEntity limit) {
+        BigDecimal limitSum = limit.getLimitSum();
+        if(limitSum == null) {
+            throw new IllegalStateException("Limit sum is null for limitId: " + limit.getId());
         }
-        return sumInUsd.compareTo(limitRemainder) > 0;
+        return spentInMonthUsd.compareTo(limitSum) > 0;
     }
     @Override
     public TransactionEntity buildTransactionEntity(TransactionDTO transactionDTO, AccountPair accounts,
-                                                     LimitEntity limit, boolean limitExceeded) {
+                                                     LimitEntity limit, BigDecimal sumInUsd, boolean limitExceeded) {
         TransactionEntity transactionEntity = new TransactionEntity();
         transactionEntity.setAccountFrom(accounts.getAccountFrom());
         transactionEntity.setAccountTo(accounts.getAccountTo());
         transactionEntity.setCurrency(transactionDTO.getCurrency());
         transactionEntity.setSum(transactionDTO.getSum());
+        transactionEntity.setSumInUsd(sumInUsd);
         transactionEntity.setCategory(transactionDTO.getExpenseCategory());
-        transactionEntity.setTransactionTime(OffsetDateTime.now());
+        transactionEntity.setTransactionTime(transactionDTO.getTransactionTime());
         transactionEntity.setLimitExceeded(limitExceeded);
         transactionEntity.setLimit(limit);
 
@@ -98,13 +97,15 @@ public class TransactionServiceHelper implements TransactionServiceHelperInterfa
 
         return transactionEntity;
     }
+    // остаток = лимит минус расходы за текущий месяц, поэтому с началом
+    // нового месяца он автоматически пересчитывается от нуля расходов
     @Override
-    public void updateLimitRemainder(BigDecimal sumInUsd, LimitEntity limit) {
-        BigDecimal limitRemainder = limit.getLimitRemainder();
-        if(limitRemainder == null) {
-            throw new IllegalStateException("Limit remainder is null for limitId: " + limit.getId());
+    public void updateLimitRemainder(BigDecimal spentInMonthUsd, LimitEntity limit) {
+        BigDecimal limitSum = limit.getLimitSum();
+        if(limitSum == null) {
+            throw new IllegalStateException("Limit sum is null for limitId: " + limit.getId());
         }
-        limit.setLimitRemainder(limit.getLimitRemainder().subtract(sumInUsd));
+        limit.setLimitRemainder(limitSum.subtract(spentInMonthUsd));
         limitService.saveLimit(limit);
     }
     @Override

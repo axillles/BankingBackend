@@ -8,12 +8,14 @@ import com.bankingsystem.app.model.AccountPair;
 import com.bankingsystem.app.model.TransactionDTO;
 import com.bankingsystem.app.repository.TransactionRepository;
 import com.bankingsystem.app.service.interfaces.*;
+import com.bankingsystem.app.util.MonthPeriodUtils;
 import jakarta.transaction.Transactional;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -40,27 +42,35 @@ public class TransactionService implements TransactionServiceInterface {
         log.info("Creating transaction for accountIdFrom: {}, accountIdTo: {}, category: {}, sum: {}, currency: {}",
                 transactionDTO.getAccountIdFrom(), transactionDTO.getAccountIdTo(),
                 transactionDTO.getExpenseCategory(), transactionDTO.getSum(), transactionDTO.getCurrency());
+        OffsetDateTime transactionTime = transactionDTO.getTransactionTime();
         //Проверка счетов отправителя и получателя
         AccountPair accounts =
                 transactionServiceHelper.validateAccounts(transactionDTO.getAccountIdFrom(), transactionDTO.getAccountIdTo());
-        //Нахождение свежего лимита;
+        //Нахождение действующего лимита (или лимита по умолчанию 1000 USD)
         LimitEntity limit =
-                transactionServiceHelper.findAndValidateLimit(transactionDTO.getAccountIdFrom(), transactionDTO.getExpenseCategory());
-        //Конвертация в доллары
+                transactionServiceHelper.findOrCreateLimit(accounts.getAccountFrom(), transactionDTO.getExpenseCategory());
+        //Конвертация в доллары по курсу на день транзакции
         BigDecimal sumInUsd =
-                transactionServiceHelper.convertToUSD(transactionDTO.getSum(), transactionDTO.getCurrency(), transactionDTO.getTransactionTime().toLocalDate());
+                transactionServiceHelper.convertToUSD(transactionDTO.getSum(), transactionDTO.getCurrency(), transactionTime.toLocalDate());
+        //Расходы за месяц транзакции по этой категории вместе с текущей транзакцией.
+        //Считаются все расходы месяца, в том числе сделанные при прошлом лимите
+        BigDecimal spentInMonthUsd = transactionRepository.sumSpentInUsd(
+                        transactionDTO.getAccountIdFrom(),
+                        transactionDTO.getExpenseCategory(),
+                        MonthPeriodUtils.startOfMonth(transactionTime),
+                        MonthPeriodUtils.startOfNextMonth(transactionTime))
+                .add(sumInUsd);
         //Проверка превышения лимита
         boolean limitExceeded =
-                transactionServiceHelper.isLimitExceeded(sumInUsd, limit);
+                transactionServiceHelper.isLimitExceeded(spentInMonthUsd, limit);
         TransactionEntity transactionEntity =
-                transactionServiceHelper.buildTransactionEntity(transactionDTO, accounts, limit, limitExceeded);
+                transactionServiceHelper.buildTransactionEntity(transactionDTO, accounts, limit, sumInUsd, limitExceeded);
         TransactionEntity savedTransaction =
                 transactionRepository.save(transactionEntity);
 
-        log.info("Updating limitRemainder for limitId: {}, old value: {}, new value: {}",
-                limit.getId(), limit.getLimitRemainder(), limit.getLimitRemainder().subtract(sumInUsd));
         //обновляем ремайндер
-        transactionServiceHelper.updateLimitRemainder(sumInUsd, limit);
+        transactionServiceHelper.updateLimitRemainder(spentInMonthUsd, limit);
+        log.info("Limit {} remainder updated to {}", limit.getId(), limit.getLimitRemainder());
 
         log.info("Transaction created with id: {}", savedTransaction.getId());
         return savedTransaction;
@@ -95,7 +105,7 @@ public class TransactionService implements TransactionServiceInterface {
 
     @Override
     public List<TransactionDTO> getTransactionsByAccountIdWhichExceedLimit(Long accountId) {
-        List<TransactionEntity> transactions = transactionRepository.getAllTransactionsByAccountFromIdOrAccountToIdAndLimitExceededIsTrue(accountId, accountId);
+        List<TransactionEntity> transactions = transactionRepository.findAllByAccountFromIdAndLimitExceededIsTrue(accountId);
 
         return transactions.stream()
                 .map(transactionServiceHelper::convertToDTO)

@@ -51,6 +51,12 @@ public class TransactionEntity {
     @Column(name = "sum", nullable = false)
     private BigDecimal sum;
 
+    // сумма транзакции в USD по курсу на день операции,
+    // по ней считается расход за месяц при проверке лимита
+    @NotNull
+    @Column(name = "sum_usd", nullable = false, precision = 19, scale = 6)
+    private BigDecimal sumInUsd;
+
     @NotNull(message = "Transaction time field must not be null")
     @PastOrPresent(message = "Transaction time must be in the past or present")
     @Column(name = "datetime", nullable = false)

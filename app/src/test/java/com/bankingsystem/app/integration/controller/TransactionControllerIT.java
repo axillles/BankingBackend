@@ -12,6 +12,7 @@ import com.bankingsystem.app.repository.AccountRepository;
 import com.bankingsystem.app.repository.TransactionRepository;
 import com.bankingsystem.app.service.impl.AccountService;
 import com.bankingsystem.app.service.impl.TransactionService;
+import com.bankingsystem.app.service.interfaces.ExchangeRateServiceInterface;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.client.WireMock;
 import jakarta.transaction.Transactional;
@@ -26,6 +27,8 @@ import org.springframework.http.MediaType;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.context.ActiveProfiles;
 
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -47,12 +50,14 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 // TODO: можно добавить больше пограничных тестов
-// FIXME : переделать тесты с security
 
 @Slf4j
 // по умолчанию эта аннотация загружает весь spring-контекст(вообще все бины)
 // однако можно в параметрах указать загружать только зависимые бины
 @SpringBootTest
+@ActiveProfiles("test")
+// эндпоинты закрыты Spring Security, в тестах подставляем аутентифицированного пользователя
+@WithMockUser
 @Testcontainers
 @AutoConfigureMockMvc
 // для того чтобы после каждого теста изменения откатывались
@@ -81,6 +86,8 @@ public class TransactionControllerIT {
     private AccountRepository accountRepository;
     @Autowired
     private TransactionRepository transactionRepository;
+    @Autowired
+    private ExchangeRateServiceInterface exchangeRateService;
     private static final Long VALID_ACCOUNT_ID_FROM = 1L;
     private static final Long VALID_ACCOUNT_ID_TO = 2L;
     private static final Long INVALID_ACCOUNT_ID = -1L;
@@ -96,8 +103,7 @@ public class TransactionControllerIT {
             OffsetDateTime.of(2024, 1, 1, 12, 0, 0, 0, ZoneOffset.UTC);
     private static final Currency LIMIT_CURRENCY = Currency.USD;
     private static final BigDecimal LIMIT_REMAINDER = BigDecimal.valueOf(500);
-    private static final AccountEntity LIMIT_ACCOUNT =
-            new AccountEntity(VALID_ACCOUNT_ID_FROM);
+    private static final AccountEntity LIMIT_ACCOUNT = createAccount(VALID_ACCOUNT_ID_FROM);
 
     // вынес запуск контейнера, т.к. загружаются тут обьекты так:
     // 1) статические блоки и инициализация полей
@@ -141,11 +147,17 @@ public class TransactionControllerIT {
 
         wireMockServer.stubFor(WireMock.get(urlPathMatching("/exchange_rate"))
                 .withQueryParam("symbol", equalTo("EUR/USD"))
-                .withQueryParam("apikey", equalTo("REMOVED_TWELVEDATA_API_KEY"))
+                .withQueryParam("apikey", equalTo("test-api-key"))
                 .willReturn(aResponse()
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody(usdEurBody)));
+    }
+
+    // планировщик курсов в тестах выключен, поэтому курс EUR/USD на сегодня загружаем из WireMock сами
+    @BeforeEach
+    void loadTodayExchangeRate() {
+        exchangeRateService.updateExchangeRateManually(Currency.EUR, Currency.USD);
     }
 
     @AfterAll
@@ -252,15 +264,14 @@ public class TransactionControllerIT {
     @Test
     @DisplayName("Should return transactions with exceeded limit for valid account ID")
     void shouldReturnTransactionsWithExceededLimitForValidAccountId() throws Exception {
-        AccountEntity accountFromEntity = createAccountFromEntity();
-        AccountEntity accountToEntity = createAccountToEntity();
+        // аккаунты 1 и 2 создаются миграцией V2
+        AccountEntity accountFromEntity = accountRepository.findById(VALID_ACCOUNT_ID_FROM).orElseThrow();
+        AccountEntity accountToEntity = accountRepository.findById(VALID_ACCOUNT_ID_TO).orElseThrow();
         TransactionEntity transaction = createTransactionEntity();
         transaction.setAccountFrom(accountFromEntity);
         transaction.setAccountTo(accountToEntity);
         transaction.setLimitExceeded(true);
 
-        accountRepository.save(accountFromEntity);
-        accountRepository.save(accountToEntity);
         transactionRepository.save(transaction);
 
         mockMvc.perform(get("/bank/transactions/exceeded/" + VALID_ACCOUNT_ID_FROM))
@@ -448,6 +459,47 @@ public class TransactionControllerIT {
     }
 
 
+    @Test
+    @DisplayName("Should flag transactions against limit active at transaction time (case 1 from task)")
+    void shouldFlagTransactionsAgainstActiveLimit() throws Exception {
+        postLimit("1000");
+        postTransaction("500").andExpect(jsonPath("$.limitExceeded").value(false));
+        postTransaction("600").andExpect(jsonPath("$.limitExceeded").value(true));
+
+        // новый лимит учитывает уже потраченные в этом месяце 1100 USD
+        postLimit("2000").andExpect(jsonPath("$.limitRemainder").value(900));
+        postTransaction("100").andExpect(jsonPath("$.limitExceeded").value(false));
+
+        mockMvc.perform(get("/bank/transactions/exceeded/" + VALID_ACCOUNT_ID_FROM))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].sum").value(600))
+                .andExpect(jsonPath("$[0].limitSum").value(1000))
+                .andExpect(jsonPath("$[0].limitCurrency").value("USD"));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions postLimit(String sum) throws Exception {
+        String body = """
+                {"accountId": %d, "limit": %s, "category": "SERVICE", "limitCurrency": "USD"}
+                """.formatted(VALID_ACCOUNT_ID_FROM, sum);
+        return mockMvc.perform(post("/bank/limits")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated());
+    }
+
+    private org.springframework.test.web.servlet.ResultActions postTransaction(String usdSum) throws Exception {
+        TransactionDTO dto = createTransactionDTO();
+        dto.setCurrency(Currency.USD);
+        dto.setExpenseCategory(Category.SERVICE);
+        dto.setSum(new BigDecimal(usdSum));
+        dto.setTransactionTime(OffsetDateTime.now());
+        return mockMvc.perform(post("/bank/transactions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(dto)))
+                .andExpect(status().isCreated());
+    }
+
     private TransactionDTO createTransactionDTO() {
         TransactionDTO transactionDTO = new TransactionDTO();
         transactionDTO.setAccountIdFrom(VALID_ACCOUNT_ID_FROM);
@@ -492,6 +544,7 @@ public class TransactionControllerIT {
         transactionEntity.setCurrency(TEST_CURRENCY);
         transactionEntity.setCategory(TEST_CATEGORY);
         transactionEntity.setSum(TEST_SUM);
+        transactionEntity.setSumInUsd(TEST_SUM);
         transactionEntity.setTransactionTime(TEST_DATE);
         transactionEntity.setLimitExceeded(false);
         transactionEntity.setLimit(limitEntity);
@@ -510,6 +563,7 @@ public class TransactionControllerIT {
         transactionEntity.setCurrency(TEST_CURRENCY);
         transactionEntity.setCategory(TEST_CATEGORY);
         transactionEntity.setSum(TEST_SUM);
+        transactionEntity.setSumInUsd(TEST_SUM);
         transactionEntity.setTransactionTime(TEST_DATE);
         transactionEntity.setLimitExceeded(false);
         transactionEntity.setLimit(limitEntity);
@@ -520,5 +574,11 @@ public class TransactionControllerIT {
         transactionEntity.setAccountTo(accountTo);
 
         return transactionEntity;
+    }
+
+    private static AccountEntity createAccount(Long id) {
+        AccountEntity account = new AccountEntity();
+        account.setId(id);
+        return account;
     }
 }

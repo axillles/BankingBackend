@@ -7,6 +7,8 @@ import com.bankingsystem.app.enums.Currency;
 import com.bankingsystem.app.model.limits.LimitRequest;
 import com.bankingsystem.app.model.limits.LimitResponse;
 import com.bankingsystem.app.repository.LimitRepository;
+import com.bankingsystem.app.repository.TransactionRepository;
+import com.bankingsystem.app.service.interfaces.AccountServiceInterface;
 import com.bankingsystem.app.service.impl.LimitService;
 import org.assertj.core.api.AssertionsForClassTypes;
 import org.junit.jupiter.api.DisplayName;
@@ -25,6 +27,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 @ExtendWith(MockitoExtension.class)
 public class LimitServiceTest {
 
@@ -33,6 +37,12 @@ public class LimitServiceTest {
 
     @Mock
     private LimitRepository limitRepository;
+
+    @Mock
+    private TransactionRepository transactionRepository;
+
+    @Mock
+    private AccountServiceInterface accountService;
 
     private static final Long LIMIT_ID = 1L;
     private static final Long VALID_ACCOUNT_ID = 1L;
@@ -46,21 +56,111 @@ public class LimitServiceTest {
     private static final OffsetDateTime NOW = OffsetDateTime.now();
 
     @Test
-    @DisplayName("Should set limit successfully")
+    @DisplayName("Should create new limit with remainder based on monthly spending")
     void shouldSetLimitSuccessfully() {
         LimitRequest limitRequest = createLimitRequest();
-        LimitEntity expectedLimitEntity = createLimitEntity();
+        AccountEntity account = createAccountEntity();
+        BigDecimal spentInMonth = BigDecimal.valueOf(1100L);
 
-        Mockito.when(limitRepository.getLimitByAccountIdAndCategory(VALID_ACCOUNT_ID, TEST_CATEGORY))
-                .thenReturn(expectedLimitEntity);
+        Mockito.when(accountService.getAccountById(VALID_ACCOUNT_ID)).thenReturn(account);
+        Mockito.when(transactionRepository.sumSpentInUsd(
+                        ArgumentMatchers.eq(VALID_ACCOUNT_ID),
+                        ArgumentMatchers.eq(TEST_CATEGORY),
+                        ArgumentMatchers.any(OffsetDateTime.class),
+                        ArgumentMatchers.any(OffsetDateTime.class)))
+                .thenReturn(spentInMonth);
         Mockito.when(limitRepository.save(ArgumentMatchers.any(LimitEntity.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
+        OffsetDateTime before = OffsetDateTime.now();
         LimitEntity actualLimit = limitService.setLimit(limitRequest);
 
-        AssertionsForClassTypes.assertThat(actualLimit)
-                .usingRecursiveComparison()
-                .isEqualTo(expectedLimitEntity);
+        AssertionsForClassTypes.assertThat(actualLimit.getId()).isNull();
+        AssertionsForClassTypes.assertThat(actualLimit.getAccount()).isEqualTo(account);
+        AssertionsForClassTypes.assertThat(actualLimit.getCategory()).isEqualTo(TEST_CATEGORY);
+        AssertionsForClassTypes.assertThat(actualLimit.getLimitSum()).isEqualByComparingTo(VALID_LIMIT);
+        AssertionsForClassTypes.assertThat(actualLimit.getLimitCurrencyShortName()).isEqualTo(Currency.USD);
+        AssertionsForClassTypes.assertThat(actualLimit.getLimitRemainder())
+                .isEqualByComparingTo(VALID_LIMIT.subtract(spentInMonth));
+        AssertionsForClassTypes.assertThat(actualLimit.getLimitDateTime()).isAfterOrEqualTo(before);
+
+        Mockito.verify(limitRepository).save(actualLimit);
+    }
+
+    @Test
+    @DisplayName("Should not modify existing limits when setting a new one")
+    void shouldNotModifyExistingLimit() {
+        Mockito.when(accountService.getAccountById(VALID_ACCOUNT_ID)).thenReturn(createAccountEntity());
+        Mockito.when(transactionRepository.sumSpentInUsd(
+                        ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.any(), ArgumentMatchers.any()))
+                .thenReturn(BigDecimal.ZERO);
+        Mockito.when(limitRepository.save(ArgumentMatchers.any(LimitEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        limitService.setLimit(createLimitRequest());
+
+        Mockito.verify(limitRepository, Mockito.never()).findFirstByAccountIdAndCategoryOrderByLimitDateTimeDescIdDesc(
+                ArgumentMatchers.any(), ArgumentMatchers.any());
+        Mockito.verify(limitRepository, Mockito.times(1)).save(ArgumentMatchers.argThat(limit -> limit.getId() == null));
+    }
+
+    @Test
+    @DisplayName("Should reject non-positive limit")
+    void shouldRejectNonPositiveLimit() {
+        LimitRequest limitRequest = createLimitRequest();
+        limitRequest.setLimit(BigDecimal.ZERO);
+
+        assertThatThrownBy(() -> limitService.setLimit(limitRequest))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Limit must be greater than zero");
+
+        Mockito.verifyNoInteractions(limitRepository);
+    }
+
+    @Test
+    @DisplayName("Should reject limit in currency other than USD")
+    void shouldRejectNonUsdLimit() {
+        LimitRequest limitRequest = createLimitRequest();
+        limitRequest.setLimitCurrency(Currency.RUB);
+
+        assertThatThrownBy(() -> limitService.setLimit(limitRequest))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Limit can be set only in USD");
+
+        Mockito.verifyNoInteractions(limitRepository);
+    }
+
+    @Test
+    @DisplayName("Should throw exception when account not found")
+    void shouldThrowWhenAccountNotFound() {
+        Mockito.when(accountService.getAccountById(VALID_ACCOUNT_ID)).thenReturn(null);
+
+        assertThatThrownBy(() -> limitService.setLimit(createLimitRequest()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Account not found");
+
+        Mockito.verifyNoInteractions(limitRepository);
+    }
+
+    @Test
+    @DisplayName("Should create default limit of 1000 USD")
+    void shouldCreateDefaultLimit() {
+        AccountEntity account = createAccountEntity();
+
+        Mockito.when(transactionRepository.sumSpentInUsd(
+                        ArgumentMatchers.eq(VALID_ACCOUNT_ID),
+                        ArgumentMatchers.eq(TEST_CATEGORY),
+                        ArgumentMatchers.any(OffsetDateTime.class),
+                        ArgumentMatchers.any(OffsetDateTime.class)))
+                .thenReturn(BigDecimal.ZERO);
+        Mockito.when(limitRepository.save(ArgumentMatchers.any(LimitEntity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        LimitEntity actualLimit = limitService.createDefaultLimit(account, TEST_CATEGORY);
+
+        AssertionsForClassTypes.assertThat(actualLimit.getLimitSum()).isEqualByComparingTo(LimitService.DEFAULT_LIMIT_SUM);
+        AssertionsForClassTypes.assertThat(actualLimit.getLimitRemainder()).isEqualByComparingTo(LimitService.DEFAULT_LIMIT_SUM);
+        AssertionsForClassTypes.assertThat(actualLimit.getLimitCurrencyShortName()).isEqualTo(Currency.USD);
     }
 
     @Test
@@ -95,7 +195,7 @@ public class LimitServiceTest {
     void shouldReturnLimitByAccountIdAndCategorySuccessfully() {
         LimitEntity expectedLimitEntity = createLimitEntity();
 
-        Mockito.when(limitRepository.findFirstByAccountIdAndCategoryOrderByLimitDateTimeDesc(VALID_ACCOUNT_ID, TEST_CATEGORY))
+        Mockito.when(limitRepository.findFirstByAccountIdAndCategoryOrderByLimitDateTimeDescIdDesc(VALID_ACCOUNT_ID, TEST_CATEGORY))
                 .thenReturn(Optional.of(expectedLimitEntity));
 
         Optional<LimitEntity> actualLimitEntity = limitService.getLimitByAccountIdAndCategory(VALID_ACCOUNT_ID, TEST_CATEGORY);
@@ -108,7 +208,7 @@ public class LimitServiceTest {
     @Test
     @DisplayName("Should return empty limit by account id and category successfully")
     void shouldReturnEmptyLimitByAccountIdAndCategorySuccessfully() {
-        Mockito.when(limitRepository.findFirstByAccountIdAndCategoryOrderByLimitDateTimeDesc(VALID_ACCOUNT_ID, TEST_CATEGORY))
+        Mockito.when(limitRepository.findFirstByAccountIdAndCategoryOrderByLimitDateTimeDescIdDesc(VALID_ACCOUNT_ID, TEST_CATEGORY))
                 .thenReturn(Optional.empty());
 
         Optional<LimitEntity> actualLimitEntity = limitService.getLimitByAccountIdAndCategory(VALID_ACCOUNT_ID, TEST_CATEGORY);
@@ -215,6 +315,12 @@ public class LimitServiceTest {
         limitEntity.setLimitRemainder(PREV_REMAINDER);
 
         return limitEntity;
+    }
+
+    private AccountEntity createAccountEntity() {
+        AccountEntity accountEntity = new AccountEntity();
+        accountEntity.setId(VALID_ACCOUNT_ID);
+        return accountEntity;
     }
 
     private LimitRequest createLimitRequest() {

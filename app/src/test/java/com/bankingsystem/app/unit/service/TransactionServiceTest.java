@@ -10,6 +10,7 @@ import com.bankingsystem.app.model.AccountPair;
 import com.bankingsystem.app.model.TransactionDTO;
 import com.bankingsystem.app.repository.TransactionRepository;
 import com.bankingsystem.app.service.impl.TransactionService;
+import com.bankingsystem.app.util.MonthPeriodUtils;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -46,6 +47,9 @@ public class TransactionServiceTest {
     private static final Category TEST_CATEGORY = Category.PRODUCT;
     private static final BigDecimal TEST_SUM = BigDecimal.valueOf(1000);
     private static final BigDecimal TEST_SUM_IN_USD = BigDecimal.valueOf(1200); //курс 1.2
+    // расходы за месяц до текущей транзакции и вместе с ней
+    private static final BigDecimal TEST_SPENT_BEFORE_IN_USD = BigDecimal.valueOf(300);
+    private static final BigDecimal TEST_SPENT_IN_MONTH_IN_USD = BigDecimal.valueOf(1500);
     private static final OffsetDateTime TEST_DATE = OffsetDateTime.now().minusDays(1);
     private static final Long LIMIT_ID  = 1L;
     private static final BigDecimal TEST_LIMIT_SUM = BigDecimal.valueOf(1000);
@@ -61,18 +65,21 @@ public class TransactionServiceTest {
 
         when(transactionServiceHelper.validateAccounts(VALID_ACCOUNT_ID_FROM,VALID_ACCOUNT_ID_TO))
                 .thenReturn(accounts);
-        when(transactionServiceHelper.findAndValidateLimit(VALID_ACCOUNT_ID_FROM, TEST_CATEGORY))
+        when(transactionServiceHelper.findOrCreateLimit(accounts.getAccountFrom(), TEST_CATEGORY))
                 .thenReturn(limitEntity);
         when(transactionServiceHelper.convertToUSD(TEST_SUM,TEST_CURRENCY,TEST_DATE.toLocalDate()))
                 .thenReturn(TEST_SUM_IN_USD);
-        when(transactionServiceHelper.isLimitExceeded(TEST_SUM_IN_USD,limitEntity))
+        when(transactionRepository.sumSpentInUsd(VALID_ACCOUNT_ID_FROM, TEST_CATEGORY,
+                MonthPeriodUtils.startOfMonth(TEST_DATE), MonthPeriodUtils.startOfNextMonth(TEST_DATE)))
+                .thenReturn(TEST_SPENT_BEFORE_IN_USD);
+        when(transactionServiceHelper.isLimitExceeded(TEST_SPENT_IN_MONTH_IN_USD,limitEntity))
                 .thenReturn(false);
-        when(transactionServiceHelper.buildTransactionEntity(transactionDTO,accounts,limitEntity,false))
+        when(transactionServiceHelper.buildTransactionEntity(transactionDTO,accounts,limitEntity,TEST_SUM_IN_USD,false))
                 .thenReturn(expectedEntity);
         when(transactionRepository.save(expectedEntity))
                 .thenReturn(expectedEntity);
         doNothing()
-                .when(transactionServiceHelper).updateLimitRemainder(TEST_SUM_IN_USD,limitEntity);
+                .when(transactionServiceHelper).updateLimitRemainder(TEST_SPENT_IN_MONTH_IN_USD,limitEntity);
 
         TransactionEntity actualEntity =
                 transactionService.createTransaction(transactionDTO);
@@ -81,7 +88,7 @@ public class TransactionServiceTest {
                 .usingRecursiveComparison()
                 .isEqualTo(expectedEntity);
 
-        verify(transactionServiceHelper).updateLimitRemainder(TEST_SUM_IN_USD,limitEntity);
+        verify(transactionServiceHelper).updateLimitRemainder(TEST_SPENT_IN_MONTH_IN_USD,limitEntity);
         verify(transactionRepository).save(expectedEntity);
     }
 
@@ -95,18 +102,21 @@ public class TransactionServiceTest {
 
         when(transactionServiceHelper.validateAccounts(VALID_ACCOUNT_ID_FROM,VALID_ACCOUNT_ID_TO))
                 .thenReturn(accounts);
-        when(transactionServiceHelper.findAndValidateLimit(VALID_ACCOUNT_ID_FROM, TEST_CATEGORY))
+        when(transactionServiceHelper.findOrCreateLimit(accounts.getAccountFrom(), TEST_CATEGORY))
                 .thenReturn(limitEntity);
         when(transactionServiceHelper.convertToUSD(TEST_SUM,TEST_CURRENCY,TEST_DATE.toLocalDate()))
                 .thenReturn(TEST_SUM_IN_USD);
-        when(transactionServiceHelper.isLimitExceeded(TEST_SUM_IN_USD,limitEntity))
+        when(transactionRepository.sumSpentInUsd(VALID_ACCOUNT_ID_FROM, TEST_CATEGORY,
+                MonthPeriodUtils.startOfMonth(TEST_DATE), MonthPeriodUtils.startOfNextMonth(TEST_DATE)))
+                .thenReturn(TEST_SPENT_BEFORE_IN_USD);
+        when(transactionServiceHelper.isLimitExceeded(TEST_SPENT_IN_MONTH_IN_USD,limitEntity))
                 .thenReturn(true);
-        when(transactionServiceHelper.buildTransactionEntity(transactionDTO,accounts,limitEntity,true))
+        when(transactionServiceHelper.buildTransactionEntity(transactionDTO,accounts,limitEntity,TEST_SUM_IN_USD,true))
                 .thenReturn(expectedEntity);
         when(transactionRepository.save(expectedEntity))
                 .thenReturn(expectedEntity);
         doNothing()
-                .when(transactionServiceHelper).updateLimitRemainder(TEST_SUM_IN_USD,limitEntity);
+                .when(transactionServiceHelper).updateLimitRemainder(TEST_SPENT_IN_MONTH_IN_USD,limitEntity);
 
         TransactionEntity actualEntity =
                 transactionService.createTransaction(transactionDTO);
@@ -115,7 +125,7 @@ public class TransactionServiceTest {
                 .usingRecursiveComparison()
                 .isEqualTo(expectedEntity);
 
-        verify(transactionServiceHelper).updateLimitRemainder(TEST_SUM_IN_USD,limitEntity);
+        verify(transactionServiceHelper).updateLimitRemainder(TEST_SPENT_IN_MONTH_IN_USD,limitEntity);
         verify(transactionRepository).save(expectedEntity);
     }
 
@@ -341,7 +351,7 @@ public class TransactionServiceTest {
         List<TransactionEntity> entities = Collections.singletonList(transactionEntity);
         List<TransactionDTO> expectedList = createTransactionDTOList();
 
-        when(transactionRepository.getAllTransactionsByAccountFromIdOrAccountToIdAndLimitExceededIsTrue(VALID_ACCOUNT_ID_FROM, VALID_ACCOUNT_ID_FROM))
+        when(transactionRepository.findAllByAccountFromIdAndLimitExceededIsTrue(VALID_ACCOUNT_ID_FROM))
                 .thenReturn(entities);
         when(transactionServiceHelper.convertToDTO(transactionEntity))
                 .thenReturn(transactionDTO);
@@ -353,7 +363,7 @@ public class TransactionServiceTest {
                 .usingRecursiveComparison()
                 .isEqualTo(expectedList);
 
-        verify(transactionRepository).getAllTransactionsByAccountFromIdOrAccountToIdAndLimitExceededIsTrue(VALID_ACCOUNT_ID_FROM, VALID_ACCOUNT_ID_FROM);
+        verify(transactionRepository).findAllByAccountFromIdAndLimitExceededIsTrue(VALID_ACCOUNT_ID_FROM);
         verify(transactionServiceHelper).convertToDTO(transactionEntity);
     }
 
@@ -362,7 +372,7 @@ public class TransactionServiceTest {
     void shouldReturnEmptyListOfTransactionsByAccountIdExceedLimitSuccessfully() {
         List<TransactionEntity> entities = Collections.emptyList();
 
-        when(transactionRepository.getAllTransactionsByAccountFromIdOrAccountToIdAndLimitExceededIsTrue(VALID_ACCOUNT_ID_FROM, VALID_ACCOUNT_ID_FROM))
+        when(transactionRepository.findAllByAccountFromIdAndLimitExceededIsTrue(VALID_ACCOUNT_ID_FROM))
                 .thenReturn(entities);
 
         List<TransactionDTO> actualList =
@@ -370,7 +380,7 @@ public class TransactionServiceTest {
 
         assertThat(actualList).isEmpty();
 
-        verify(transactionRepository).getAllTransactionsByAccountFromIdOrAccountToIdAndLimitExceededIsTrue(VALID_ACCOUNT_ID_FROM, VALID_ACCOUNT_ID_FROM);
+        verify(transactionRepository).findAllByAccountFromIdAndLimitExceededIsTrue(VALID_ACCOUNT_ID_FROM);
         verify(transactionServiceHelper, never()).convertToDTO(any());
     }
 

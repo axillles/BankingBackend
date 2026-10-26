@@ -1,6 +1,7 @@
 package com.bankingsystem.app.integration.controller;
 
 import com.bankingsystem.app.model.ExchangeRateResponse;
+import com.bankingsystem.app.enums.Currency;
 import com.bankingsystem.app.service.impl.ExchangeRateService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.tomakehurst.wiremock.WireMockServer;
@@ -12,6 +13,8 @@ import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.http.HttpStatus;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -30,10 +33,12 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-// FIXME : переделать тесты с security
 
 @Slf4j
 @SpringBootTest
+@ActiveProfiles("test")
+// эндпоинты закрыты Spring Security, в тестах подставляем аутентифицированного пользователя
+@WithMockUser
 @Transactional
 @Testcontainers
 @AutoConfigureMockMvc
@@ -77,7 +82,7 @@ public class ExchangeRateControllerIT {
 
     @BeforeAll
     void beforeAll() throws Exception{
-        wireMockServer = new WireMockServer(8090);
+        wireMockServer = new WireMockServer(8089);
         wireMockServer.start();
 
         wireMockServer.resetAll();
@@ -87,11 +92,17 @@ public class ExchangeRateControllerIT {
 
         wireMockServer.stubFor(WireMock.get(urlPathMatching("/exchange_rate"))
                 .withQueryParam("symbol", equalTo("EUR/USD"))
-                .withQueryParam("apikey", equalTo("REMOVED_TWELVEDATA_API_KEY"))
+                .withQueryParam("apikey", equalTo("test-api-key"))
                 .willReturn(aResponse()
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
                         .withBody(usdEurBody)));
+    }
+
+    // планировщик курсов в тестах выключен, поэтому курс EUR/USD на сегодня загружаем из WireMock сами
+    @BeforeEach
+    void loadTodayExchangeRate() {
+        exchangeRateService.updateExchangeRateManually(Currency.EUR, Currency.USD);
     }
 
     @AfterAll

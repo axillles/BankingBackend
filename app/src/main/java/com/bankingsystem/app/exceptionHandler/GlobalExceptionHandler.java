@@ -1,6 +1,5 @@
 package com.bankingsystem.app.exceptionHandler;
 
-import com.bankingsystem.app.customException.LimitUpdateNotAllowedException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
@@ -81,23 +80,6 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .status(HttpStatus.NOT_FOUND)
                 .body(error.toString());
-    }
-
-    @ExceptionHandler(LimitUpdateNotAllowedException.class)
-    public ResponseEntity<ErrorResponse> handleLimitUpdateNotAllowedException(
-            LimitUpdateNotAllowedException e) {
-
-        log.warn("LimitUpdateNotAllowedException: {}", e.getMessage());
-
-        ErrorResponse error = ErrorResponse.create(
-                e,
-                HttpStatus.FORBIDDEN,
-                e.getMessage()
-        );
-
-        return ResponseEntity
-                .status(HttpStatus.FORBIDDEN)
-                .body(error);
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)

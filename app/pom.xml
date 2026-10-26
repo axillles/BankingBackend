@@ -29,6 +29,8 @@
 	<properties>
 		<java.version>23</java.version>
 		<spring-cloud.version>2024.0.1</spring-cloud.version>
+		<!-- 1.21.4+ работает с Docker Engine 29 (более старые версии используют устаревший Docker API) -->
+		<testcontainers.version>1.21.4</testcontainers.version>
 	</properties>
 	<dependencyManagement>
 		<dependencies>

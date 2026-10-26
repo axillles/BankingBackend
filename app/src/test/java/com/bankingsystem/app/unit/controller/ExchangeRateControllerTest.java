@@ -15,6 +15,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 import java.math.BigDecimal;
@@ -94,12 +95,14 @@ public class ExchangeRateControllerTest {
 //    }
 
     @Test
-    @DisplayName("Should return BAD_REQUEST status when currency param is null")
+    // при HTTP-запросе пустой обязательный параметр отсекает Spring (400 проверяется в ExchangeRateControllerIT),
+    // здесь проверяем, что контроллер не идет в сервис
+    @DisplayName("Should fail without calling service when currency param is null")
     void shouldReturnBadRequestStatusWhenCurrencyParamIsNull() {
-        ResponseEntity<ExchangeRateEntity> actualRate =
-                exchangeRateController.getExchangeRate(null, EUR, VALID_DATE);
+        assertThatThrownBy(() -> exchangeRateController.getExchangeRate(null, EUR, VALID_DATE))
+                .isInstanceOf(NullPointerException.class);
 
-        assertThat(actualRate.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        verifyNoInteractions(exchangeRateService);
     }
 
     @Test
@@ -155,12 +158,14 @@ public class ExchangeRateControllerTest {
     }
 
     @Test
-    @DisplayName("Should return exchange rate when date is from future")
+    // IllegalArgumentException превращается в 400 в GlobalExceptionHandler
+    @DisplayName("Should reject date from future")
     void shouldReturnBadRequestWhenDateIsFromFuture() {
-        ResponseEntity<ExchangeRateEntity> actualRate =
-                exchangeRateController.getExchangeRate(USD, EUR, FUTURE_DATE);
+        assertThatThrownBy(() -> exchangeRateController.getExchangeRate(USD, EUR, FUTURE_DATE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Parameter 'date' is incorrect");
 
-        assertThat(actualRate.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        verifyNoInteractions(exchangeRateService);
     }
 
     @Test
@@ -207,12 +212,12 @@ public class ExchangeRateControllerTest {
 //    }
 
     @Test
-    @DisplayName("Should return BAD_REQUEST status while updating exchange rate and currency param equals null")
+    @DisplayName("Should fail without calling service while updating exchange rate and currency param equals null")
     void shouldReturnBadRequestStatusWhileUpdatingExchangeRateAndCurrencyParamIsNull() {
-        ResponseEntity<ExchangeRateEntity> actualRate =
-                exchangeRateController.updateExchangeRate(null, EUR);
+        assertThatThrownBy(() -> exchangeRateController.updateExchangeRate(null, EUR))
+                .isInstanceOf(NullPointerException.class);
 
-        assertThat(actualRate.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        verifyNoInteractions(exchangeRateService);
     }
 
     // FIXME: тест должен быть интеграционным

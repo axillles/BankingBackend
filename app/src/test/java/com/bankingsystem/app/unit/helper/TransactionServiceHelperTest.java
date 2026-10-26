@@ -107,61 +107,76 @@ public class TransactionServiceHelperTest {
     }
 
     @Test
-    @DisplayName("Should find and validate limit successfully")
-    void shouldValidateLimitSuccessfully() {
+    @DisplayName("Should return existing limit")
+    void shouldReturnExistingLimit() {
         LimitEntity expectedLimit = createLimitEntity();
+        AccountEntity account = createAccountEntity(ACCOUNT_FROM);
 
         when(limitService.getLimitByAccountIdAndCategory(ACCOUNT_FROM,TEST_CATEGORY)).thenReturn(Optional.of(expectedLimit));
 
-        LimitEntity actualLimit = transactionServiceHelper.findAndValidateLimit(ACCOUNT_FROM, TEST_CATEGORY);
+        LimitEntity actualLimit = transactionServiceHelper.findOrCreateLimit(account, TEST_CATEGORY);
 
-        assertThat(expectedLimit).isEqualTo(actualLimit);
-        verify(limitService,times(1)).getLimitByAccountIdAndCategory(ACCOUNT_FROM,TEST_CATEGORY);
-
+        assertThat(actualLimit).isEqualTo(expectedLimit);
+        verify(limitService, never()).createDefaultLimit(any(), any());
     }
-    //не
-    @Test
-    @DisplayName("Should return exception when limit not found")
-    void shouldReturnExceptionWhenLimitNotFound() {
-        when(limitService.getLimitByAccountIdAndCategory(ACCOUNT_FROM,TEST_CATEGORY)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> transactionServiceHelper.findAndValidateLimit(ACCOUNT_FROM, TEST_CATEGORY))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Limit for account" + ACCOUNT_FROM
-                        + "and category " + TEST_CATEGORY + " not found");
+    @Test
+    @DisplayName("Should create default limit when limit is not set")
+    void shouldCreateDefaultLimitWhenLimitNotFound() {
+        LimitEntity defaultLimit = createLimitEntity();
+        AccountEntity account = createAccountEntity(ACCOUNT_FROM);
+
+        when(limitService.getLimitByAccountIdAndCategory(ACCOUNT_FROM,TEST_CATEGORY)).thenReturn(Optional.empty());
+        when(limitService.createDefaultLimit(account, TEST_CATEGORY)).thenReturn(defaultLimit);
+
+        LimitEntity actualLimit = transactionServiceHelper.findOrCreateLimit(account, TEST_CATEGORY);
+
+        assertThat(actualLimit).isEqualTo(defaultLimit);
+        verify(limitService).createDefaultLimit(account, TEST_CATEGORY);
     }
 
     @Test
     @DisplayName("Should return false when Limit is not Exceeded ")
     void shouldReturnFalseWhenLimitIsNotExceeded() {
-        //limit remainder equals 1000
+        //limit sum equals 1000
         LimitEntity expectedLimit = createLimitEntity();
-        BigDecimal sumInUSD = new BigDecimal("100.00");
+        BigDecimal spentInMonth = new BigDecimal("100.00");
 
-        boolean actualResult = transactionServiceHelper.isLimitExceeded(sumInUSD, expectedLimit);
+        boolean actualResult = transactionServiceHelper.isLimitExceeded(spentInMonth, expectedLimit);
 
         assertThat(actualResult).isEqualTo(LIMIT_EXCEEDED_FALSE);
     }
+
+    @Test
+    @DisplayName("Should return false when spending equals limit")
+    void shouldReturnFalseWhenSpendingEqualsLimit() {
+        LimitEntity expectedLimit = createLimitEntity();
+
+        boolean actualResult = transactionServiceHelper.isLimitExceeded(LIMIT_SUM_VALUE, expectedLimit);
+
+        assertThat(actualResult).isEqualTo(LIMIT_EXCEEDED_FALSE);
+    }
+
     @Test
     @DisplayName("Should return true when limit exceeded")
     void shouldReturnTrueWhenLimitExceeded() {
         LimitEntity expectedLimit = createLimitEntity();
-        BigDecimal sumInUSD = new BigDecimal("1100.00");
+        BigDecimal spentInMonth = new BigDecimal("1100.00");
 
-        boolean actualResult = transactionServiceHelper.isLimitExceeded(sumInUSD, expectedLimit);
+        boolean actualResult = transactionServiceHelper.isLimitExceeded(spentInMonth, expectedLimit);
 
         assertThat(actualResult).isEqualTo(LIMIT_EXCEEDED_TRUE);
     }
 
     @Test
-    @DisplayName("Should return exception when limit remainder is null")
-    void shouldReturnExceptionWhenLimitRemainderIsNull() {
+    @DisplayName("Should return exception when limit sum is null")
+    void shouldReturnExceptionWhenLimitSumIsNull() {
         LimitEntity expectedLimit = createLimitEntity();
-        expectedLimit.setLimitRemainder(null);
+        expectedLimit.setLimitSum(null);
 
         assertThatThrownBy(() -> transactionServiceHelper.isLimitExceeded(SUM_IN_USD,expectedLimit))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Limit remainder is null for limitId: " + LIMIT_ID);
+                .hasMessage("Limit sum is null for limitId: " + LIMIT_ID);
     }
     @Test
     @DisplayName("Should build transaction Entity successfully")
@@ -170,40 +185,43 @@ public class TransactionServiceHelperTest {
              LimitEntity limitEntity = createLimitEntity();
              AccountPair accounts = new AccountPair(createAccountEntity(ACCOUNT_FROM), createAccountEntity(ACCOUNT_TO));
 
-             TransactionEntity  actualEntity = transactionServiceHelper.buildTransactionEntity(dto,accounts,limitEntity,LIMIT_EXCEEDED_FALSE);
+             TransactionEntity  actualEntity = transactionServiceHelper.buildTransactionEntity(dto,accounts,limitEntity,SUM_IN_USD,LIMIT_EXCEEDED_FALSE);
 
              assertThat(actualEntity.getAccountFrom().getId()).isEqualTo(ACCOUNT_FROM);
              assertThat(actualEntity.getAccountTo().getId()).isEqualTo(ACCOUNT_TO);
              assertThat(actualEntity.getCurrency()).isEqualTo(TEST_CURRENCY);
              assertThat(actualEntity.getSum()).isEqualTo(TEST_SUM);
+             assertThat(actualEntity.getSumInUsd()).isEqualTo(SUM_IN_USD);
              assertThat(actualEntity.getCategory()).isEqualTo(TEST_CATEGORY);
+             assertThat(actualEntity.getTransactionTime()).isEqualTo(dto.getTransactionTime());
              assertThat(actualEntity.getLimitExceeded()).isEqualTo(LIMIT_EXCEEDED_FALSE);
              assertThat(actualEntity.getLimitSumAtTime()).isEqualTo(LIMIT_SUM_VALUE);
              assertThat(actualEntity.getLimitCurrencyAtTime()).isEqualTo(LIMIT_CURRENCY_USD);
-             assertThat(actualEntity.getLimitDateTimeAtTime()).isEqualTo(TEST_DATE);
+             assertThat(actualEntity.getLimitDateTimeAtTime()).isEqualTo(LIMIT_DATETIME);
     }
     @Test
-    @DisplayName("Should return update limit remainder")
+    @DisplayName("Should update limit remainder as limit minus monthly spending")
     void shouldReturnUpdateLimitRemainder() {
         LimitEntity limitEntity = createLimitEntity();
-        BigDecimal expectedRemainder = LIMIT_REMAINDER.subtract(SUM_IN_USD);
+        BigDecimal spentInMonth = new BigDecimal("1100.00");
+        BigDecimal expectedRemainder = LIMIT_SUM_VALUE.subtract(spentInMonth);
 
         when(limitService.saveLimit(limitEntity)).thenReturn(limitEntity);
 
-        transactionServiceHelper.updateLimitRemainder(SUM_IN_USD,limitEntity);
+        transactionServiceHelper.updateLimitRemainder(spentInMonth,limitEntity);
 
-        assertThat(limitEntity.getLimitRemainder()).isEqualTo(expectedRemainder);
+        assertThat(limitEntity.getLimitRemainder()).isEqualByComparingTo(expectedRemainder);
         verify(limitService,times(1)).saveLimit(limitEntity);
     }
     @Test
-    @DisplayName("Should return exception when remainder null")
-    void shouldReturnExceptionWhenRemainderIsNull() {
+    @DisplayName("Should return exception when limit sum is null while updating remainder")
+    void shouldReturnExceptionWhenLimitSumIsNullWhileUpdatingRemainder() {
         LimitEntity limitEntity = createLimitEntity();
-        limitEntity.setLimitRemainder(null);
+        limitEntity.setLimitSum(null);
 
         assertThatThrownBy(() ->transactionServiceHelper.updateLimitRemainder(SUM_IN_USD,limitEntity))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Limit remainder is null for limitId: " + limitEntity.getId());
+                .hasMessage("Limit sum is null for limitId: " + limitEntity.getId());
     }
     @Test
     @DisplayName("Should return amount in USD")
@@ -276,7 +294,7 @@ public class TransactionServiceHelperTest {
         dto.setCurrency(TEST_CURRENCY);
         dto.setExpenseCategory(TEST_CATEGORY);
         dto.setSum(TEST_SUM);
-        dto.setTransactionTime(TEST_DATE);
+        dto.setTransactionTime(TEST_DATE.plusDays(5));
         dto.setLimitId(LIMIT_ID);
         dto.setLimitSum(LIMIT_SUM_VALUE);
         dto.setLimitCurrency(LIMIT_CURRENCY_USD);

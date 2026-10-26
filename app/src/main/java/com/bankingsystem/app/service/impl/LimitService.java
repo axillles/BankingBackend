@@ -1,13 +1,16 @@
 package com.bankingsystem.app.service.impl;
 
-import com.bankingsystem.app.customException.LimitUpdateNotAllowedException;
+import com.bankingsystem.app.entity.AccountEntity;
 import com.bankingsystem.app.entity.LimitEntity;
 import com.bankingsystem.app.enums.Category;
 import com.bankingsystem.app.enums.Currency;
 import com.bankingsystem.app.model.limits.LimitRequest;
 import com.bankingsystem.app.model.limits.LimitResponse;
 import com.bankingsystem.app.repository.LimitRepository;
+import com.bankingsystem.app.repository.TransactionRepository;
+import com.bankingsystem.app.service.interfaces.AccountServiceInterface;
 import com.bankingsystem.app.service.interfaces.LimitServiceInterface;
+import com.bankingsystem.app.util.MonthPeriodUtils;
 import jakarta.transaction.Transactional;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,8 +18,6 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -25,13 +26,20 @@ import java.util.stream.Collectors;
 @Service
 public class LimitService implements LimitServiceInterface {
 
-    private final LimitRepository limitRepository;
-    private static final int COOLDOWN_PERIOD_TO_SET_NEW_LIMIT_IN_MONTH = 1;
+    // лимит по умолчанию, если клиент не установил свой
+    public static final BigDecimal DEFAULT_LIMIT_SUM = new BigDecimal("1000.00");
 
-    @Autowired // говорит, что необходимо найти и внедрить
-    // зависимость LimitRepository
-    public LimitService(LimitRepository limitRepository) {
+    private final LimitRepository limitRepository;
+    private final TransactionRepository transactionRepository;
+    private final AccountServiceInterface accountService;
+
+    @Autowired // говорит, что необходимо найти и внедрить зависимости
+    public LimitService(LimitRepository limitRepository,
+                        TransactionRepository transactionRepository,
+                        AccountServiceInterface accountService) {
         this.limitRepository = limitRepository;
+        this.transactionRepository = transactionRepository;
+        this.accountService = accountService;
     }
 
     @Override
@@ -44,48 +52,57 @@ public class LimitService implements LimitServiceInterface {
     public LimitEntity setLimit(LimitRequest limit) {
         if(limit.getLimit().compareTo(BigDecimal.ZERO) <= 0) {
             log.error("Limit must be greater than zero");
-            throw new IllegalArgumentException("Limit cannot be less than 0");
+            throw new IllegalArgumentException("Limit must be greater than zero");
         }
 
+        if(limit.getLimitCurrency() != Currency.USD) {
+            log.error("Limit currency {} is not supported", limit.getLimitCurrency());
+            throw new IllegalArgumentException("Limit can be set only in USD");
+        }
+
+        AccountEntity account = accountService.getAccountById(limit.getAccountId());
+        if(account == null) {
+            log.error("Account {} not found", limit.getAccountId());
+            throw new IllegalStateException("Account not found");
+        }
+
+        // Существующие лимиты не изменяются: каждый новый лимит - новая запись
+        // с текущей датой, поэтому транзакции, совершенные до него,
+        // остаются привязаны к старому лимиту
+        return createLimit(account, limit.getCategory(), limit.getLimit());
+    }
+
+    @Override
+    @Transactional
+    public LimitEntity createDefaultLimit(AccountEntity account, Category category) {
+        log.info("Limit for account {} and category {} is not set, creating default {} USD",
+                account.getId(), category, DEFAULT_LIMIT_SUM);
+        return createLimit(account, category, DEFAULT_LIMIT_SUM);
+    }
+
+    private LimitEntity createLimit(AccountEntity account, Category category, BigDecimal limitSum) {
         OffsetDateTime now = OffsetDateTime.now();
-        LimitEntity existingLimit = limitRepository.getLimitByAccountIdAndCategory(limit.getAccountId(), limit.getCategory());
 
-        if(existingLimit == null) {
-            log.error("Limit not found for account id {} ", limit.getAccountId());
-            throw new IllegalStateException("Limit not found for account id " + limit.getAccountId());
-        }
+        // Остаток считается от расходов за текущий месяц:
+        // если в этом месяце уже потратили 1100 USD, то новый лимит 2000 USD
+        // оставляет 900 USD
+        BigDecimal spentInMonth = transactionRepository.sumSpentInUsd(
+                account.getId(),
+                category,
+                MonthPeriodUtils.startOfMonth(now),
+                MonthPeriodUtils.startOfNextMonth(now));
 
-        OffsetDateTime prevUpdateTime = existingLimit.getLimitDateTime();
-        BigDecimal prevRemainder = existingLimit.getLimitRemainder();
+        LimitEntity newLimit = new LimitEntity();
+        newLimit.setAccount(account);
+        newLimit.setCategory(category);
+        newLimit.setLimitSum(limitSum);
+        newLimit.setLimitCurrencyShortName(Currency.USD);
+        newLimit.setLimitDateTime(now);
+        newLimit.setLimitRemainder(limitSum.subtract(spentInMonth));
 
-        // Подсчитываем сколько времени прошло с момента прошлого обновления лимита
-        long monthsBetween = ChronoUnit.MONTHS.between(
-                prevUpdateTime.truncatedTo(ChronoUnit.DAYS),
-                now.truncatedTo(ChronoUnit.DAYS)
-        );
-
-        // Проверяем, превышает ли период 1 месяц
-        if (monthsBetween <= COOLDOWN_PERIOD_TO_SET_NEW_LIMIT_IN_MONTH) {
-            // Логирование того, что пользователь слишком рано хочет обновить лимит
-            log.warn("Attempt to update limit too soon. Account: {}, Category: {}, Last update: {}",
-                    limit.getAccountId(),
-                    limit.getCategory(),
-                    existingLimit.getLimitDateTime());
-
-            throw new LimitUpdateNotAllowedException(
-                    String.format("Limit can be updated only once per %d month(s). " +
-                                    "Last update was at %s",
-                            COOLDOWN_PERIOD_TO_SET_NEW_LIMIT_IN_MONTH,
-                            prevUpdateTime.format(DateTimeFormatter.ISO_DATE))
-            );
-        }
-
-        existingLimit.setLimitSum(limit.getLimit());
-        existingLimit.setLimitRemainder(prevRemainder.add(limit.getLimit().subtract(existingLimit.getLimitSum())));
-        existingLimit.setLimitCurrencyShortName(Currency.USD);
-        existingLimit.setLimitDateTime(now);
-        log.info("Limit created: " + existingLimit);
-        return limitRepository.save(existingLimit);
+        LimitEntity saved = limitRepository.save(newLimit);
+        log.info("Limit created: {}", saved);
+        return saved;
     }
 
     @Override
@@ -100,7 +117,7 @@ public class LimitService implements LimitServiceInterface {
     @Override
     public Optional<LimitEntity> getLimitByAccountIdAndCategory(Long accountId, Category category) {
         log.info("getLimitByAccountIdAndCategory: accountId: {} category: {}", accountId, category);
-        return limitRepository.findFirstByAccountIdAndCategoryOrderByLimitDateTimeDesc(accountId, category);
+        return limitRepository.findFirstByAccountIdAndCategoryOrderByLimitDateTimeDescIdDesc(accountId, category);
     }
 
     @Override

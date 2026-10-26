@@ -1,5 +1,6 @@
 package com.bankingsystem.app.helper.interfaces;
 
+import com.bankingsystem.app.entity.AccountEntity;
 import com.bankingsystem.app.entity.LimitEntity;
 import com.bankingsystem.app.entity.TransactionEntity;
 import com.bankingsystem.app.enums.Category;
@@ -16,14 +17,14 @@ public interface TransactionServiceHelperInterface {
 
     AccountPair validateAccounts(Long accountIdFrom, Long accountIdTo);
 
-    LimitEntity findAndValidateLimit(Long account, Category category);
+    LimitEntity findOrCreateLimit(AccountEntity account, Category category);
 
-    boolean isLimitExceeded(BigDecimal sumInUsd, LimitEntity limit);
+    boolean isLimitExceeded(BigDecimal spentInMonthUsd, LimitEntity limit);
 
     TransactionEntity buildTransactionEntity(TransactionDTO transactionDTO, AccountPair accounts,
-                                             LimitEntity limit, boolean limitExceeded);
+                                             LimitEntity limit, BigDecimal sumInUsd, boolean limitExceeded);
 
-    void updateLimitRemainder(BigDecimal sumInUsd, LimitEntity limit);
+    void updateLimitRemainder(BigDecimal spentInMonthUsd, LimitEntity limit);
 
     BigDecimal convertToUSD(BigDecimal amount, Currency currency, LocalDate date);
 }

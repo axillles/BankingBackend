@@ -14,6 +14,9 @@ import java.util.Optional;
 public interface LimitRepository extends JpaRepository<LimitEntity, Long> {
     List<LimitEntity> findByAccountId(Long accountId);
 
-    LimitEntity getLimitByAccountIdAndCategory(Long accountId, Category category);
-    Optional<LimitEntity> findFirstByAccountIdAndCategoryOrderByLimitDateTimeDesc(Long accountId, Category category);
+    // лимиты не обновляются, а добавляются новыми записями,
+    // поэтому действующий лимит - последний установленный.
+    // TIMESTAMP в MySQL хранит время с точностью до секунды,
+    // поэтому при равном времени последним считается лимит с большим id
+    Optional<LimitEntity> findFirstByAccountIdAndCategoryOrderByLimitDateTimeDescIdDesc(Long accountId, Category category);
 }
